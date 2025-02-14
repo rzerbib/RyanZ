@@ -219,7 +219,7 @@ def main_worker(gpu, ngpus_per_node, argss):
     train_transform = None  # Disable image transformation
 
     train_data = FireSpreadDataset.FireSpreadDataset(
-    data_dir="/workspace/WildfireSpreadTS/data",
+    data_dir="data",
     included_fire_years=[2018, 2019],
     n_leading_observations=5,
     crop_side_length=65,
@@ -239,7 +239,17 @@ def main_worker(gpu, ngpus_per_node, argss):
             transform.Crop([args.train_h, args.train_w], crop_type='center', padding=mean, ignore_label=args.ignore_label),
             transform.ToTensor(),
             transform.Normalize(mean=mean, std=std)])
-        val_data = dataset.SemData(split='val', data_root=args.data_root, data_list=args.val_list, transform=val_transform)
+        val_data = FireSpreadDataset(
+            data_dir="data",  # Make sure this path is correct
+            included_fire_years=[2018, 2019],  # Adjust based on available years
+            n_leading_observations=5,
+            crop_side_length=65,
+            load_from_hdf5=True,
+            is_train=False,  # Ensure validation is correctly set
+            remove_duplicate_features=False,
+            stats_years=[2020, 2021],
+        )
+
         if args.distributed:
             val_sampler = torch.utils.data.distributed.DistributedSampler(val_data)
         else:

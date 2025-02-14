@@ -1,0 +1,8 @@
+data/
+WildfireSpreadTS/
+exp/
+*.hdf5
+*.csv
+*.npy
+*.npz
+*.pkl
