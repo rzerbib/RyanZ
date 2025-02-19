@@ -154,7 +154,7 @@ class FireSpreadDataset(Dataset):
             for img_path in imgs_to_load:
                 with rasterio.open(img_path, 'r') as ds:
                     imgs.append(ds.read())
-            x = np.stack(imgs[:-1], axis=0)
+            x = np.stack([imgs[-1][9], imgs[-1][14], imgs[-1][22]], axis=0)  # Select 10th, 15th, and 23rd channels
             y = imgs[-1][-1, ...]
 
         if self.return_doy:
