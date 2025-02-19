@@ -256,11 +256,63 @@ def main_worker(gpu, ngpus_per_node, argss):
             val_sampler = None
         val_loader = torch.utils.data.DataLoader(val_data, batch_size=args.batch_size_val, shuffle=False, num_workers=args.workers, pin_memory=True, sampler=val_sampler)
 
+
+    # Step 1A: Initialize lists for storing train & val metrics
+    train_loss_list = []
+    val_loss_list = []
+    train_mIoU_list = []
+    val_mIoU_list = []
+    train_mAcc_list = []
+    val_mAcc_list = []
+    train_allAcc_list = []
+    val_allAcc_list = []
+    
+    import matplotlib.pyplot as plt
+    import os
+    
+    def plot_metric(train_vals, val_vals, metric_name, save_dir):
+        """
+        Plots Train vs. Val curves for the specified metric, saves as PNG.
+        """
+        plt.figure(figsize=(8, 6))
+        
+        # Plot Train
+        if len(train_vals) > 0:
+            plt.plot(range(1, len(train_vals) + 1), train_vals,
+                     label=f"Train {metric_name}", marker='o')
+        
+        # Plot Val
+        if len(val_vals) > 0:
+            plt.plot(range(1, len(val_vals) + 1), val_vals,
+                     label=f"Val {metric_name}", marker='s')
+        
+        plt.xlabel("Epoch")
+        plt.ylabel(metric_name)
+        plt.title(f"Train vs. Val {metric_name}")
+        plt.legend()
+        plt.grid(True)
+    
+        # Save the figure
+        plot_path = os.path.join(save_dir, f"{metric_name.lower()}_plot.png")
+        plt.savefig(plot_path, dpi=300)
+        plt.close()
+        print(f"✅ Saved {metric_name} plot to {plot_path}")
+
+    
     for epoch in range(args.start_epoch, args.epochs):
         epoch_log = epoch + 1
         if args.distributed:
             train_sampler.set_epoch(epoch)
+            
+        # Step 2A: Run training for this epoch
         loss_train, mIoU_train, mAcc_train, allAcc_train = train(train_loader, model, optimizer, epoch)
+    
+        # Step 2B: Append TRAIN metrics to lists
+        train_loss_list.append(loss_train)
+        train_mIoU_list.append(mIoU_train)
+        train_mAcc_list.append(mAcc_train)
+        train_allAcc_list.append(allAcc_train)
+        
         if main_process():
             writer.add_scalar('loss_train', loss_train, epoch_log)
             writer.add_scalar('mIoU_train', mIoU_train, epoch_log)
@@ -276,11 +328,31 @@ def main_worker(gpu, ngpus_per_node, argss):
                 os.remove(deletename)
         if args.evaluate:
             loss_val, mIoU_val, mAcc_val, allAcc_val = validate(val_loader, model, criterion)
+
+            # Append VAL metrics
+            val_loss_list.append(loss_val)
+            val_mIoU_list.append(mIoU_val)
+            val_mAcc_list.append(mAcc_val)
+            val_allAcc_list.append(allAcc_val)
+            
             if main_process():
                 writer.add_scalar('loss_val', loss_val, epoch_log)
                 writer.add_scalar('mIoU_val', mIoU_val, epoch_log)
                 writer.add_scalar('mAcc_val', mAcc_val, epoch_log)
                 writer.add_scalar('allAcc_val', allAcc_val, epoch_log)
+
+    # Step 3: After the training loop ends, let's create a 'training_plots' folder and plot everything
+    png_dir = os.path.join(args.save_path, "training_plots")
+    os.makedirs(png_dir, exist_ok=True)
+    
+    if main_process():  # Only main process saves plots
+        plot_metric(train_loss_list, val_loss_list, "Loss", png_dir)
+        plot_metric(train_mIoU_list, val_mIoU_list, "mIoU", png_dir)
+        plot_metric(train_mAcc_list, val_mAcc_list, "mAcc", png_dir)
+        plot_metric(train_allAcc_list, val_allAcc_list, "AllAcc", png_dir)
+    
+        print(f"✅ Training & Validation plots saved in {png_dir}")
+
 
 
 def train(train_loader, model, optimizer, epoch):
