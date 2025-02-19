@@ -221,7 +221,7 @@ def main_worker(gpu, ngpus_per_node, argss):
     train_data = FireSpreadDataset.FireSpreadDataset(
     data_dir="data",
     included_fire_years=[2018, 2019],
-    n_leading_observations=5,
+    n_leading_observations=1,
     crop_side_length=65,
     load_from_hdf5=True,
     is_train=True,
@@ -242,7 +242,7 @@ def main_worker(gpu, ngpus_per_node, argss):
         val_data = FireSpreadDataset(
             data_dir="data",  # Make sure this path is correct
             included_fire_years=[2018, 2019],  # Adjust based on available years
-            n_leading_observations=5,
+            n_leading_observations=1,
             crop_side_length=65,
             load_from_hdf5=True,
             is_train=False,  # Ensure validation is correctly set
