@@ -18,7 +18,11 @@ class FireSpreadDataset(Dataset):
     def __init__(self, data_dir: str, included_fire_years: List[int], n_leading_observations: int,
                  crop_side_length: int, load_from_hdf5: bool, is_train: bool, remove_duplicate_features: bool,
                  stats_years: List[int], n_leading_observations_test_adjustment: Optional[int] = None, 
-                 features_to_keep: Optional[List[int]] = None, return_doy: bool = False):
+                 features_to_keep: Optional[List[int]] = None, return_doy: bool = False, transform = None):
+        
+        
+        
+        
         """_summary_
 
         Args:
@@ -40,6 +44,8 @@ class FireSpreadDataset(Dataset):
         """
         super().__init__()
 
+        self.transform = transform  # <-- store it
+
         self.stats_years = stats_years
         self.return_doy = return_doy
         self.features_to_keep = features_to_keep
@@ -51,6 +57,7 @@ class FireSpreadDataset(Dataset):
         self.n_leading_observations_test_adjustment = n_leading_observations_test_adjustment
         self.included_fire_years = included_fire_years
         self.data_dir = data_dir
+
 
         self.validate_inputs()
 
@@ -154,7 +161,7 @@ class FireSpreadDataset(Dataset):
             for img_path in imgs_to_load:
                 with rasterio.open(img_path, 'r') as ds:
                     imgs.append(ds.read())
-            x = np.stack(imgs[:-1], axis=0)
+            x = np.stack([imgs[-1][9], imgs[-1][14], imgs[-1][22]], axis=0)
             y = imgs[-1][-1, ...]
 
         if self.return_doy:
@@ -182,6 +189,11 @@ class FireSpreadDataset(Dataset):
 
         # 3) Preprocess/augment
         x, y = self.preprocess_and_augment(x, y)
+
+        # NEW: If a transform is provided, apply it
+        if self.transform is not None:
+            # transform expected to take (x, y) => (x, y)
+            x, y = self.transform(x, y)
 
         # 4) (Optional) remove duplicate static features if needed
         if self.remove_duplicate_features and self.n_leading_observations > 1:

@@ -26,26 +26,6 @@ cv2.ocl.setUseOpenCL(False)
 cv2.setNumThreads(0)
 
 
-'''
-import torchvision.transforms.functional as Ftf
-
-class ResizePair(object):
-    """Custom transform to resize both input x and label y to the same shape."""
-    def __init__(self, size=(257,257)):
-        self.size = size
-    def __call__(self, x, y):
-        # x shape: [C, H, W], y shape: [H, W]
-        # Convert x, y to e.g. torch tensors if not already
-        x_resized = Ftf.resize(x, self.size)  # bilinear for input
-        y_resized = Ftf.resize(y.unsqueeze(0), self.size, interpolation=Ftf.InterpolationMode.NEAREST).squeeze(0)
-        return x_resized, y_resized
-
-train_transform = ResizePair(size=(257,257))
-val_transform   = ResizePair(size=(257,257))
-'''
-
-
-
 def get_parser():
     parser = argparse.ArgumentParser(description='PyTorch Semantic Segmentation')
     parser.add_argument('--config', type=str, default='config/ade20k/ade20k_pspnet50.yaml', help='config file')
@@ -236,11 +216,7 @@ def main_worker(gpu, ngpus_per_node, argss):
     std = [0.229, 0.224, 0.225]
     std = [item * value_scale for item in std]
 
-    train_transform = transform.Compose([
-        transform.Crop([257, 257], crop_type='center', padding=mean, ignore_label=args.ignore_label),
-        transform.ToTensor(),
-        transform.Normalize(mean=mean, std=std)])
-
+    train_transform = None  # Disable image transformation
 
     train_data = FireSpreadDataset(
     data_dir="data",
@@ -250,8 +226,7 @@ def main_worker(gpu, ngpus_per_node, argss):
     load_from_hdf5=True,
     is_train=True,
     remove_duplicate_features=False,
-    stats_years=[2020, 2021],
-    transform=train_transform)
+    stats_years=[2020, 2021],)
 
 
     if args.distributed:
@@ -261,7 +236,7 @@ def main_worker(gpu, ngpus_per_node, argss):
     train_loader = torch.utils.data.DataLoader(train_data, batch_size=8, shuffle=True, num_workers=4, drop_last=True)
     if args.evaluate:
         val_transform = transform.Compose([
-            transform.Crop([257, 257], crop_type='center', padding=mean, ignore_label=args.ignore_label),
+            transform.Crop([args.train_h, args.train_w], crop_type='center', padding=mean, ignore_label=args.ignore_label),
             transform.ToTensor(),
             transform.Normalize(mean=mean, std=std)])
         val_data = FireSpreadDataset(
@@ -273,7 +248,6 @@ def main_worker(gpu, ngpus_per_node, argss):
             is_train=False,  # Ensure validation is correctly set
             remove_duplicate_features=False,
             stats_years=[2020, 2021],
-            transform=val_transform,
         )
 
         if args.distributed:
@@ -282,15 +256,20 @@ def main_worker(gpu, ngpus_per_node, argss):
             val_sampler = None
         val_loader = torch.utils.data.DataLoader(val_data, batch_size=args.batch_size_val, shuffle=False, num_workers=args.workers, pin_memory=True, sampler=val_sampler)
 
-    # 1A. Initialize lists to store train & val metrics
-    train_loss_list, val_loss_list = [], []
-    train_mIoU_list, val_mIoU_list = [], []
-    train_mAcc_list, val_mAcc_list = [], []
-    train_allAcc_list, val_allAcc_list = [], []
 
+    # Step 1A: Initialize lists for storing train & val metrics
+    train_loss_list = []
+    val_loss_list = []
+    train_mIoU_list = []
+    val_mIoU_list = []
+    train_mAcc_list = []
+    val_mAcc_list = []
+    train_allAcc_list = []
+    val_allAcc_list = []
+    
     import matplotlib.pyplot as plt
     import os
-
+    
     def plot_metric(train_vals, val_vals, metric_name, save_dir):
         """
         Plots Train vs. Val curves for the specified metric, saves as PNG.
@@ -300,42 +279,40 @@ def main_worker(gpu, ngpus_per_node, argss):
         # Plot Train
         if len(train_vals) > 0:
             plt.plot(range(1, len(train_vals) + 1), train_vals,
-                    label=f"Train {metric_name}", marker='o')
+                     label=f"Train {metric_name}", marker='o')
         
         # Plot Val
         if len(val_vals) > 0:
             plt.plot(range(1, len(val_vals) + 1), val_vals,
-                    label=f"Val {metric_name}", marker='s')
+                     label=f"Val {metric_name}", marker='s')
         
         plt.xlabel("Epoch")
         plt.ylabel(metric_name)
         plt.title(f"Train vs. Val {metric_name}")
         plt.legend()
         plt.grid(True)
-
-        # Save figure
+    
+        # Save the figure
         plot_path = os.path.join(save_dir, f"{metric_name.lower()}_plot.png")
         plt.savefig(plot_path, dpi=300)
         plt.close()
         print(f"✅ Saved {metric_name} plot to {plot_path}")
 
-        
-        
+    
     for epoch in range(args.start_epoch, args.epochs):
         epoch_log = epoch + 1
-
-        # 2A. Get train metrics from the train() function
+        if args.distributed:
+            train_sampler.set_epoch(epoch)
+            
+        # Step 2A: Run training for this epoch
         loss_train, mIoU_train, mAcc_train, allAcc_train = train(train_loader, model, optimizer, epoch)
-
-        # 2B. Append them to the train lists
+    
+        # Step 2B: Append TRAIN metrics to lists
         train_loss_list.append(loss_train)
         train_mIoU_list.append(mIoU_train)
         train_mAcc_list.append(mAcc_train)
         train_allAcc_list.append(allAcc_train)
-
-        if args.distributed:
-            train_sampler.set_epoch(epoch)
-        loss_train, mIoU_train, mAcc_train, allAcc_train = train(train_loader, model, optimizer, epoch)
+        
         if main_process():
             writer.add_scalar('loss_train', loss_train, epoch_log)
             writer.add_scalar('mIoU_train', mIoU_train, epoch_log)
@@ -351,8 +328,8 @@ def main_worker(gpu, ngpus_per_node, argss):
                 os.remove(deletename)
         if args.evaluate:
             loss_val, mIoU_val, mAcc_val, allAcc_val = validate(val_loader, model, criterion)
-            
-            # Append them to the val lists
+
+            # Append VAL metrics
             val_loss_list.append(loss_val)
             val_mIoU_list.append(mIoU_val)
             val_mAcc_list.append(mAcc_val)
@@ -364,16 +341,16 @@ def main_worker(gpu, ngpus_per_node, argss):
                 writer.add_scalar('mAcc_val', mAcc_val, epoch_log)
                 writer.add_scalar('allAcc_val', allAcc_val, epoch_log)
 
-    # 3. After the training loop, plot everything
+    # Step 3: After the training loop ends, let's create a 'training_plots' folder and plot everything
     png_dir = os.path.join(args.save_path, "training_plots")
     os.makedirs(png_dir, exist_ok=True)
-
-    if main_process():  # Only the main process plots
+    
+    if main_process():  # Only main process saves plots
         plot_metric(train_loss_list, val_loss_list, "Loss", png_dir)
         plot_metric(train_mIoU_list, val_mIoU_list, "mIoU", png_dir)
         plot_metric(train_mAcc_list, val_mAcc_list, "mAcc", png_dir)
         plot_metric(train_allAcc_list, val_allAcc_list, "AllAcc", png_dir)
-
+    
         print(f"✅ Training & Validation plots saved in {png_dir}")
 
 
@@ -393,11 +370,11 @@ def train(train_loader, model, optimizer, epoch):
     max_iter = args.epochs * len(train_loader)
     for i, (input, target) in enumerate(train_loader):
         data_time.update(time.time() - end)
-        #if args.zoom_factor != 8:
-            #h = int((target.size()[1] - 1) / 8 * args.zoom_factor + 1)
-            #w = int((target.size()[2] - 1) / 8 * args.zoom_factor + 1)
+        if args.zoom_factor != 8:
+            h = int((target.size()[1] - 1) / 8 * args.zoom_factor + 1)
+            w = int((target.size()[2] - 1) / 8 * args.zoom_factor + 1)
             # 'nearest' mode doesn't support align_corners mode and 'bilinear' mode is fine for downsampling
-            #target = F.interpolate(target.unsqueeze(1).float(), size=(h, w), mode='bilinear', align_corners=True).squeeze(1).long()
+            target = F.interpolate(target.unsqueeze(1).float(), size=(h, w), mode='bilinear', align_corners=True).squeeze(1).long()
         input = input.cuda(non_blocking=True)
         target = target.cuda(non_blocking=True)
         
@@ -406,13 +383,8 @@ def train(train_loader, model, optimizer, epoch):
         print(f'Input type: {input.dtype}, Input shape: {input.shape}')
         print(f'Target type: {target.dtype}, Target shape: {target.shape}')
         print(input[0, 0])
-        #input = input.view(input.shape[0], -1, 65, 65)
+        #input = input.view(8 -1, 65,65)
         print(input[0, 0])
-
-        # Extract channels 10, 15, and 23 from the original input
-        input = input[:, [9, 14, 22], :, :]
-
-
         output, main_loss, aux_loss = model(input, target)
         if not args.multiprocessing_distributed:
             main_loss, aux_loss = torch.mean(main_loss), torch.mean(aux_loss)
@@ -509,29 +481,9 @@ def validate(val_loader, model, criterion):
         print(f'Input type: {input.dtype}, Input shape: {input.shape}')
         print(f'Target type: {target.dtype}, Target shape: {target.shape}') 
         
-        # Squeeze out any extra dimension if necessary (e.g., if shape is [N, 1, 40, H, W])
-        input = input.squeeze(1)  # [N, 40, H, W]
-
-        # Slice channels 10th, 15th, and 23rd → indices (9, 14, 22)
-        input = input[:, [9, 14, 22], :, :]  # Now shape is [N, 3, H, W]
-
-         # 2) Fix height/width to satisfy (H-1)%8=0
-        # Optionally do a resize if your transforms didn't fix it
-        #input = F.interpolate(input, size=(257, 257), mode='bilinear', align_corners=False)
-
-        # 4) *Instead*, resize your target to match 257×257
-        #target = F.interpolate(
-            #target.unsqueeze(1).float(),       # shape: [N,1,H,W]
-            #size=(257, 257),                  # <-- ADDED/CHANGED
-            #mode='nearest'                    # important for integer labels
-        #).squeeze(1).long()                   # back to shape [N,H,W]
-
-        # Now forward pass
-        output = model(input)                 # output shape => [N, Classes, 257, 257]
-
-
-        #if args.zoom_factor != 8:
-            #output = F.interpolate(output, size=target.size()[1:], mode='bilinear', align_corners=True)
+        output = model(input)
+        if args.zoom_factor != 8:
+            output = F.interpolate(output, size=target.size()[1:], mode='bilinear', align_corners=True)
         loss = criterion(output, target)
 
         n = input.size(0)
