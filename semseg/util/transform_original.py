@@ -3,31 +3,12 @@ import math
 import numpy as np
 import numbers
 from collections.abc import Iterable
-import torchvision.transforms.functional as F
-
+import cv2
 
 import torch
 
+
 class Compose(object):
-    def __init__(self, segtransform):
-        self.segtransform = segtransform
-
-    def __call__(self, image, label):
-#       # [OLD] If 'image' or 'label' come in as torch.Tensor, convert them to NumPy
-#        #  so that all the following transforms can use cv2...
-#        if isinstance(image, torch.Tensor):
-#            image = image.numpy()
-#        if isinstance(label, torch.Tensor):
-#            label = label.numpy()
-        
-        for t in self.segtransform:
-            image, label = t(image, label)
-
-        # [OLD] convert back to Tensor 
-        # ...
-        return image, label
-"""
- Compose(object):
     # Composes segtransforms: segtransform.Compose([segtransform.RandScale([0.5, 2.0]), segtransform.ToTensor()])
     def __init__(self, segtransform):
         self.segtransform = segtransform
@@ -53,7 +34,7 @@ class Compose(object):
             if image.ndim == 3:
                 image = torch.from_numpy(image.transpose((2,0,1))).float()
             elif image.ndim == 2:
-        class        # If your image is single-channel, expand dims
+                # If your image is single-channel, expand dims
                 image = torch.from_numpy(image[None,...]).float()
             else:
                 raise RuntimeError(f"Unexpected image shape={image.shape}, cannot convert to Tensor")
@@ -63,7 +44,7 @@ class Compose(object):
             label = torch.from_numpy(label).long()
 
         return image, label
-"""      
+        
 
 
 class ToTensor(object):
@@ -82,10 +63,7 @@ class ToTensor(object):
         image = torch.from_numpy(image.transpose((2, 0, 1)))
         if not isinstance(image, torch.FloatTensor):
             image = image.float()
-        
-        label = torch.from_numpy(label).long()
-
-        #label = torch.from_numpy(label)
+        label = torch.from_numpy(label)
         if not isinstance(label, torch.LongTensor):
             label = label.long()
         return image, label
@@ -111,27 +89,6 @@ class Normalize(object):
         return image, label
 
 
-
-import torchvision.transforms.functional as F
-
-class Resize(object):
-    def __init__(self, size):
-        self.size = size  # (h,w) or (w,h)
-
-    def __call__(self, image, label):
-        # image shape: (C,H,W), label shape: (H,W)
-
-        # 1) F.resize for image
-        image = F.resize(image, self.size, interpolation=torchvision.transforms.InterpolationMode.BILINEAR)
-
-        # 2) resize label too, but label is (H,W), so we add a channel
-        label = label.unsqueeze(0)  # shape: (1,H,W)
-        label = F.resize(label, self.size, interpolation=torchvision.transforms.InterpolationMode.NEAREST)
-        label = label.squeeze(0)    # shape back to (H,W)
-
-        return image, label
-
-'''
 class Resize(object):
     # Resize the input to the given size, 'size' is a 2-element tuple or list in the order of (h, w).
     def __init__(self, size):
@@ -142,7 +99,7 @@ class Resize(object):
         image = cv2.resize(image, self.size[::-1], interpolation=cv2.INTER_LINEAR)
         label = cv2.resize(label, self.size[::-1], interpolation=cv2.INTER_NEAREST)
         return image, label
-'''
+
 
 class RandScale(object):
     # Randomly resize image & label with scale factor in [scale_min, scale_max]
@@ -176,82 +133,6 @@ class RandScale(object):
         return image, label
 
 
-class Crop(object):
-    def __init__(self, size, crop_type='center', padding=None, ignore_label=255):
-        self.crop_h, self.crop_w = size if isinstance(size, (tuple,list)) else (size,size)
-        self.crop_type   = crop_type
-        self.padding     = padding
-        self.ignore_label= ignore_label
-
-    def __call__(self, image, label):
-        print("DEBUG: image.shape =", image.shape)  # e.g. [C,H,W]
-        print("DEBUG: label.shape =", label.shape)  # e.g. [H,W]
-
-        # 1) Get shape from label or from image
-        #    If label is [H,W], do:
-        h, w = label.shape
-
-        # 2) If we need to pad
-        pad_h = max(self.crop_h - h, 0)
-        pad_w = max(self.crop_w - w, 0)
-        if pad_h > 0 or pad_w > 0:
-            top  = pad_h // 2
-            bot  = pad_h - top
-            left = pad_w // 2
-            right= pad_w - left
-
-            fill_val_img = 0.0
-            if isinstance(self.padding, (tuple,list)) and len(self.padding)>0:
-                fill_val_img = float(self.padding[0])  # or just 0
-
-            # Pad image
-            image = F.pad(
-                image, 
-                (left, right, top, bot),  # pad = (left, right, top, bottom)
-                fill=fill_val_img,
-                padding_mode='constant'
-            )
-            # Pad label
-            label = label.unsqueeze(0) # shape [1,H,W]
-            label = F.pad(
-                label,
-                (left, right, top, bot),
-                fill=self.ignore_label,
-                padding_mode='constant'
-            )
-            label = label.squeeze(0)   # shape back to [H,W]
-
-            # Update h,w after padding
-            h, w = label.shape
-
-        # 3) Now do random or center crop
-        if self.crop_type == 'rand':
-            # random
-            if h>self.crop_h:
-                top  = random.randint(0, h - self.crop_h)
-            else:
-                top  = 0
-            if w>self.crop_w:
-                left = random.randint(0, w - self.crop_w)
-            else:
-                left = 0
-
-            image = F.crop(image, top, left, self.crop_h, self.crop_w)
-            label = label.unsqueeze(0)
-            label = F.crop(label, top, left, self.crop_h, self.crop_w)
-            label = label.squeeze(0)
-        else:
-            # center
-            image = F.center_crop(image, (self.crop_h, self.crop_w))
-            label = label.unsqueeze(0)
-            label = F.center_crop(label, (self.crop_h, self.crop_w))
-            label = label.squeeze(0)
-
-        return image, label
-
-
-
-'''
 class Crop(object):
     """Crops the given ndarray image (H*W*C or H*W).
     Args:
@@ -315,7 +196,7 @@ class Crop(object):
         image = image[h_off:h_off+self.crop_h, w_off:w_off+self.crop_w]
         label = label[h_off:h_off+self.crop_h, w_off:w_off+self.crop_w]
         return image, label
-'''
+
 
 class RandRotate(object):
     # Randomly rotate image & label with rotate factor in [rotate_min, rotate_max]
@@ -340,14 +221,8 @@ class RandRotate(object):
             angle = self.rotate[0] + (self.rotate[1] - self.rotate[0]) * random.random()
             h, w = label.shape
             matrix = cv2.getRotationMatrix2D((w / 2, h / 2), angle, 1)
-            #image = cv2.warpAffine(image, matrix, (w, h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=self.padding)
-            #label = cv2.warpAffine(label, matrix, (w, h), flags=cv2.INTER_NEAREST, borderMode=cv2.BORDER_CONSTANT, borderValue=self.ignore_label)
-            # just F.rotate
-            image = F.rotate(image, angle, interpolation=InterpolationMode.BILINEAR, fill=0)
-            label = label.unsqueeze(0)
-            label = F.rotate(label, angle, interpolation=InterpolationMode.NEAREST, fill=self.ignore_label)
-            label = label.squeeze(0)
-        
+            image = cv2.warpAffine(image, matrix, (w, h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=self.padding)
+            label = cv2.warpAffine(label, matrix, (w, h), flags=cv2.INTER_NEAREST, borderMode=cv2.BORDER_CONSTANT, borderValue=self.ignore_label)
         return image, label
 
 
@@ -357,13 +232,8 @@ class RandomHorizontalFlip(object):
 
     def __call__(self, image, label):
         if random.random() < self.p:
-            import torchvision.transforms.functional as F
-
-            image = F.hflip(image)
-            label = F.hflip(label.unsqueeze(0)).squeeze(0)
-
-            #image = cv2.flip(image, 1)
-            #label = cv2.flip(label, 1)
+            image = cv2.flip(image, 1)
+            label = cv2.flip(label, 1)
         return image, label
 
 
@@ -384,8 +254,7 @@ class RandomGaussianBlur(object):
 
     def __call__(self, image, label):
         if random.random() < 0.5:
-            # Apply Gaussian blur with a kernel size of (radius, radius)
-            image = F.gaussian_blur(image, kernel_size=(self.radius, self.radius))  
+            image = cv2.GaussianBlur(image, (self.radius, self.radius), 0)
         return image, label
 
 

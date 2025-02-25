@@ -20,7 +20,7 @@ from tensorboardX import SummaryWriter
 from semseg.util import dataset, transform, config
 from semseg.util.util import AverageMeter, poly_learning_rate, intersectionAndUnionGPU, find_free_port
 
-from WildfireSpreadTS.src.dataloader.FireSpreadDataset import FireSpreadDataset
+from semseg.tool.FireSpreadDataset import FireSpreadDataset
 
 cv2.ocl.setUseOpenCL(False)
 cv2.setNumThreads(0)
@@ -238,7 +238,7 @@ def main_worker(gpu, ngpus_per_node, argss):
 
     train_transform = transform.Compose([
         transform.Crop([257, 257], crop_type='center', padding=mean, ignore_label=args.ignore_label),
-        transform.ToTensor(),
+        #transform.ToTensor(),
         transform.Normalize(mean=mean, std=std)])
 
 
@@ -262,7 +262,7 @@ def main_worker(gpu, ngpus_per_node, argss):
     if args.evaluate:
         val_transform = transform.Compose([
             transform.Crop([257, 257], crop_type='center', padding=mean, ignore_label=args.ignore_label),
-            transform.ToTensor(),
+            #transform.ToTensor(),
             transform.Normalize(mean=mean, std=std)])
         val_data = FireSpreadDataset(
             data_dir="data",  # Make sure this path is correct
@@ -335,7 +335,7 @@ def main_worker(gpu, ngpus_per_node, argss):
 
         if args.distributed:
             train_sampler.set_epoch(epoch)
-        loss_train, mIoU_train, mAcc_train, allAcc_train = train(train_loader, model, optimizer, epoch)
+        #loss_train, mIoU_train, mAcc_train, allAcc_train = train(train_loader, model, optimizer, epoch)
         if main_process():
             writer.add_scalar('loss_train', loss_train, epoch_log)
             writer.add_scalar('mIoU_train', mIoU_train, epoch_log)

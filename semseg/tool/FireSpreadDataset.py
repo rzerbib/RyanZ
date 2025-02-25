@@ -187,8 +187,12 @@ class FireSpreadDataset(Dataset):
         else:
             x, y = loaded_imgs
 
+        # 3) Convert from NumPy → Torch 
+        x = torch.from_numpy(x)  # shape: (T, F, H, W) or (F, H, W)
+        y = torch.from_numpy(y).long()  # shape: (H, W)
+
         # 3) Preprocess/augment
-        x, y = self.preprocess_and_augment(x, y)
+        #x, y = self.preprocess_and_augment(x, y)
 
         # NEW: If a transform is provided, apply it
         if self.transform is not None:
