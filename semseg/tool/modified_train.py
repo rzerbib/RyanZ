@@ -22,6 +22,8 @@ from semseg.util.util import AverageMeter, poly_learning_rate, intersectionAndUn
 
 from semseg.tool.FireSpreadDataset import FireSpreadDataset
 
+input_nan, target_nan = [], []
+
 cv2.ocl.setUseOpenCL(False)
 cv2.setNumThreads(0)
 
@@ -133,6 +135,10 @@ def main():
 def main_worker(gpu, ngpus_per_node, argss):
     global args
     args = argss
+
+    #explicitly import os as a module
+    import os
+
     if args.distributed:
         if args.dist_url == "env://" and args.rank == -1:
             args.rank = int(os.environ["RANK"])
@@ -203,6 +209,7 @@ def main_worker(gpu, ngpus_per_node, argss):
     else:
         model = torch.nn.DataParallel(model.cuda())
 
+    #if hasattr(args, 'weight') and args.weight:  # Ensure args.weight exists
     if args.weight:
         if os.path.isfile(args.weight):
             if main_process():
@@ -222,7 +229,7 @@ def main_worker(gpu, ngpus_per_node, argss):
             # checkpoint = torch.load(args.resume)
             checkpoint = torch.load(args.resume, map_location=lambda storage, loc: storage.cuda())
             args.start_epoch = checkpoint['epoch']
-            model.load_state_dict(checkpoint['state_dict'])
+            model.load_state_dict(checkpoint['state_dict'], strict=False)
             optimizer.load_state_dict(checkpoint['optimizer'])
             if main_process():
                 logger.info("=> loaded checkpoint '{}' (epoch {})".format(args.resume, checkpoint['epoch']))
@@ -275,7 +282,8 @@ def main_worker(gpu, ngpus_per_node, argss):
             stats_years=[2020, 2021],
             transform=val_transform,
         )
-
+        global val_testing_debug
+        val_testing_debug = len(val_data)
         if args.distributed:
             val_sampler = torch.utils.data.distributed.DistributedSampler(val_data)
         else:
@@ -323,6 +331,8 @@ def main_worker(gpu, ngpus_per_node, argss):
         
     for epoch in range(args.start_epoch, args.epochs):
         epoch_log = epoch + 1
+
+        global loss_train, mIoU_train, mAcc_train, allAcc_train
 
         # 2A. Get train metrics from the train() function
         loss_train, mIoU_train, mAcc_train, allAcc_train = train(train_loader, model, optimizer, epoch)
@@ -391,7 +401,33 @@ def train(train_loader, model, optimizer, epoch):
     model.train()
     end = time.time()
     max_iter = args.epochs * len(train_loader)
+    
+    
+    
+    
+    
+    '''
+    
     for i, (input, target) in enumerate(train_loader):
+        global input_nan, target_nan
+        # Immediately after reading input and target
+        print("DEBUG: Checking input for NaNs or infinities...")
+        if torch.isnan(input).any():
+            input_nan.append("nans")
+            print(f"Found NaNs in input at iteration={i}!")
+        if torch.isinf(input).any():
+            print(f"Found infinities in input at iteration={i}!")
+            input_nan.append("infs")
+        # Repeat for target
+        print("DEBUG: Checking target for NaNs or infinities...")
+        if torch.isnan(target).any():
+            target_nan.append("nans")
+            print(f"Found NaNs in target at iteration={i}!")
+        if torch.isinf(target).any():
+            target_nan.append("infs")
+            print(f"Found infinities in target at iteration={i}!")
+        
+        
         data_time.update(time.time() - end)
         #if args.zoom_factor != 8:
             #h = int((target.size()[1] - 1) / 8 * args.zoom_factor + 1)
@@ -412,6 +448,38 @@ def train(train_loader, model, optimizer, epoch):
         # Extract channels 10, 15, and 23 from the original input
         input = input[:, [9, 14, 22], :, :]
 
+    '''
+
+    nan_log = []  # List to store NaN-related debugging messages
+
+    for i, (input, target) in enumerate(train_loader):
+        data_time.update(time.time() - end)
+
+        # Move to GPU
+        input = input.cuda(non_blocking=True)
+        target = target.cuda(non_blocking=True)
+
+        # 🛑 DEBUG: Check for NaNs in input
+        if torch.isnan(input).any():
+            nan_log.append(f"⚠️ NaNs found in INPUT at iteration {i}.")
+
+        # 🛑 DEBUG: Check for NaNs in target
+        if torch.isnan(target).any():
+            nan_log.append(f"⚠️ NaNs found in TARGET at iteration {i}.")
+
+        # Forward pass
+        # Select only 3 specific channels (change indices if needed)
+        input = input[:, [9, 14, 22], :, :]  # Extract channels 10, 15, and 23 (0-based indexing)
+
+        # Now pass to the model
+        output, main_loss, aux_loss = model(input, target)
+
+
+        # 🛑 DEBUG: Check for NaNs in model output
+        if torch.isnan(output).any():
+            nan_log.append(f"⚠️ NaNs found in MODEL OUTPUT at iteration {i}.")
+
+
 
         output, main_loss, aux_loss = model(input, target)
         if not args.multiprocessing_distributed:
@@ -421,6 +489,10 @@ def train(train_loader, model, optimizer, epoch):
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
+
+        # 🛑 DEBUG: Check for NaNs in loss
+        if torch.isnan(loss).any():
+            nan_log.append(f"⚠️ NaNs found in LOSS at iteration {i}.")
 
         n = input.size(0)
         if args.multiprocessing_distributed:
@@ -442,6 +514,15 @@ def train(train_loader, model, optimizer, epoch):
         loss_meter.update(loss.item(), n)
         batch_time.update(time.time() - end)
         end = time.time()
+
+        # ✅ Save NaN debug log at the end of training
+        if nan_log:  # Only write if there were NaNs
+            with open("nan_debug_log.txt", "w") as f:
+                f.write("\n".join(nan_log))
+            print("🚨 NaN Debug log saved to nan_debug_log.txt 🚨")
+        else:
+            print("✅ No NaNs detected during training.")
+
 
         current_iter = epoch * len(train_loader) + i + 1
         current_lr = poly_learning_rate(args.base_lr, current_iter, max_iter, power=args.power)
@@ -576,8 +657,31 @@ def validate(val_loader, model, criterion):
         for i in range(args.classes):
             logger.info('Class_{} Result: iou/accuracy {:.4f}/{:.4f}.'.format(i, iou_class[i], accuracy_class[i]))
         logger.info('<<<<<<<<<<<<<<<<< End Evaluation <<<<<<<<<<<<<<<<<')
+
+        #LIST DEBUGGING
+        print('<<<<<<<<<<<<<<<<< LIST DEBUGGING <<<<<<<<<<<<<<<<<')
+        print('loss_train')
+        print(loss_train)
+        print('mIoU_train')
+        print(mIoU_train)
+        print('mAcc_train')
+        print(mAcc_train)
+        print('allAcc_train')
+        print(allAcc_train)
+
+        print(f"evaluation running: {args.evaluate}")
+        
+        print("DEBUG: len(val_data) =", val_testing_debug)
+
+        print(f"DEBUG: input has nans/infs? {input_nan}")
+        print(f"DEBUG: target has nans/infs? {target_nan}")
+
+
     return loss_meter.avg, mIoU, mAcc, allAcc
+
+
 
 
 if __name__ == '__main__':
     main()
+

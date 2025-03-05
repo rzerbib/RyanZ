@@ -16,9 +16,9 @@ from datetime import datetime
 
 class FireSpreadDataset(Dataset):
     def __init__(self, data_dir: str, included_fire_years: List[int], n_leading_observations: int,
-                 crop_side_length: int, load_from_hdf5: bool, is_train: bool, remove_duplicate_features: bool,
-                 stats_years: List[int], n_leading_observations_test_adjustment: Optional[int] = None, 
-                 features_to_keep: Optional[List[int]] = None, return_doy: bool = False, transform = None):
+                    crop_side_length: int, load_from_hdf5: bool, is_train: bool, remove_duplicate_features: bool,
+                    stats_years: List[int], n_leading_observations_test_adjustment: Optional[int] = None, 
+                    features_to_keep: Optional[List[int]] = None, return_doy: bool = False, transform = None):
         
         
         
@@ -74,7 +74,7 @@ class FireSpreadDataset(Dataset):
         self.imgs_per_fire = self.read_list_of_images()
         self.datapoints_per_fire = self.compute_datapoints_per_fire()
         self.length = sum([sum(self.datapoints_per_fire[fire_year].values())
-                          for fire_year in self.datapoints_per_fire])
+                            for fire_year in self.datapoints_per_fire])
 
         # Used in preprocessing and normalization. Better to define it once than build/call for every data point
         # The one-hot matrix is used for one-hot encoding of land cover classes
@@ -83,6 +83,9 @@ class FireSpreadDataset(Dataset):
         self.means = self.means[None, :, None, None]
         self.stds = self.stds[None, :, None, None]
         self.indices_of_degree_features = get_indices_of_degree_features()
+        self.debug_log = []
+        self.NaN_stacking_debug = []
+
 
     def find_image_index_from_dataset_index(self, target_id) -> (int, str, int):
         """_summary_ Given the index of a data point in the dataset, find the corresponding fire that contains it, 
@@ -147,6 +150,16 @@ class FireSpreadDataset(Dataset):
             hdf5_path = self.imgs_per_fire[found_fire_year][found_fire_name][0]
             with h5py.File(hdf5_path, 'r') as f:
                 imgs = f["data"][in_fire_index:end_index]
+                
+                #raw data nan debug
+                self.NaN_stacking_debug.append(f"imgs[0]: {imgs[0]}")
+                self.NaN_stacking_debug.append(f"img.shape: {imgs.shape}")
+                
+                if np.isnan(imgs).any():
+                    self.debug_log.append(f"NaNs detected in RAW IMAGE: {hdf5_path}")
+                
+                
+                
                 if self.return_doy:
                     doys = f["data"].attrs["img_dates"][in_fire_index:(
                         end_index-1)]
@@ -155,19 +168,152 @@ class FireSpreadDataset(Dataset):
             x, y = np.split(imgs, [-1], axis=0)
             # Last image's active fire mask is used as label, rest is input data
             y = y[0, -1, ...]
+
+
+            self.NaN_stacking_debug.append(f"x[0]: {x[0]}")
         else:
             imgs_to_load = self.imgs_per_fire[found_fire_year][found_fire_name][in_fire_index:end_index]
             imgs = []
             for img_path in imgs_to_load:
                 with rasterio.open(img_path, 'r') as ds:
-                    imgs.append(ds.read())
+                    
+
+                    #raw data nan debug
+                    img = ds.read()
+                    if np.isnan(img).any():
+                        self.debug_log.append(f"NaNs detected in RAW IMAGE: {img_path}")
+            
+                    imgs.append(img)
+
+
+            
+            self.NaN_stacking_debug.append(f"img[0]: {img[0]}")
+            self.NaN_stacking_debug.append(f"img.shape: {img.shape}")
+            
             x = np.stack([imgs[-1][9], imgs[-1][14], imgs[-1][22]], axis=0)
             y = imgs[-1][-1, ...]
 
+
+            
+            self.NaN_stacking_debug.append(f"x[0]: {x[0]}")
+
+            # Only write to log file if NaNs were detected
+            if self.NaN_stacking_debug:
+                log_filename = "NaN_stacking_debug.txt"
+                with open(log_filename, "a") as log_file:
+                    log_file.write(f"\n📝 NaN_stacking_debug for index {index}:\n")
+                    for entry in self.NaN_stacking_debug:
+                        log_file.write(str(entry) + "\n")
+
+                print(f"✅ NaN stacking debug log saved to {log_filename}")
+
+                # Clear the log list after writing to avoid massive accumulation
+                self.NaN_stacking_debug = []
+
+            # Save actual NumPy arrays if NaNs were found
+            if np.isnan(imgs).any():
+                np.save(f"NaN_debug_imgs_{index}.npy", imgs[0])  # Saves full array in binary format
+
+            if np.isnan(x).any():
+                np.save(f"NaN_debug_x_{index}.npy", x[0])  # Saves full array
+
+            if np.isnan(y).any():
+                np.save(f"NaN_debug_y_{index}.npy", y)  # Saves full array
+
+            print(f"✅ Saved NaN debug arrays for index {index}")
+
+        
         if self.return_doy:
             return x, y, doys
+
+        
+        #nan in final x or y debug
+        if np.isnan(x).any() or np.isnan(y).any():
+            self.debug_log.append(f"⚠️ NaNs detected after stacking x or y in `load_imgs()'")
+
         return x, y
 
+
+    def __getitem__(self, index):
+        """
+        Retrieves a single sample (x, y) — or (x, y, doys) if self.return_doy is True — from the dataset.
+
+        - x is originally shaped [T, F, H, W], i.e. time steps x features x height x width.
+        - We flatten the (T x F) dimensions into one 'channel' dimension, resulting in [T*F, H, W].
+        - That way, PSPNet sees a standard [C, H, W] input per sample.
+        """
+
+        # 1) Locate which fire-year/name/index to load
+        found_fire_year, found_fire_name, in_fire_index = self.find_image_index_from_dataset_index(index)
+
+        # 2) Actually load the data (images + label + optional doys)
+        loaded_imgs = self.load_imgs(found_fire_year, found_fire_name, in_fire_index)
+        
+        if self.return_doy:
+            x, y, doys = loaded_imgs
+        else:
+            x, y = loaded_imgs
+
+        if np.isnan(x).any() or np.isnan(y).any():
+            self.debug_log.append(
+                f"⚠️ NaNs after stacking in `load_imgs()` → year={found_fire_year}, fire={found_fire_name}, fire_index={in_fire_index}"
+            )
+
+        # 3) Convert from NumPy → Torch 
+        x = torch.from_numpy(x)  # shape: (T, F, H, W) or (F, H, W)
+        y = torch.from_numpy(y).long()  # shape: (H, W)
+
+        if torch.isnan(x).any() or torch.isnan(y).any():
+            self.debug_log.append(f"⚠️ NaNs detected after converting to tensor in `__getitem__()` for index {index}")
+
+        # 4) Apply optional preprocessing/augmentation
+        if self.transform is not None:
+            x, y = self.transform(x, y)
+            
+            if torch.isnan(x).any() or torch.isnan(y).any():
+                self.debug_log.append(f"⚠️ NaNs detected after applying transform in `__getitem__()` for index {index}")
+
+        # 5) (Optional) remove duplicate static features if needed
+        if self.remove_duplicate_features and self.n_leading_observations > 1:
+            x = self.flatten_and_remove_duplicate_features_(x)
+
+        # 6) (Optional) discard unwanted features
+        elif self.features_to_keep is not None:
+            if len(x.shape) != 4:
+                raise NotImplementedError(f"Removing features is only implemented for 4D tensors, but got shape={x.shape}.")
+            x = x[:, self.features_to_keep, ...]
+
+        # 7) Flatten time (T) + features (F) → single channel dimension
+        if len(x.shape) == 4:
+            T, F, H, W = x.shape
+            x = x.view(T * F, H, W)  # Now shape is [C, H, W]
+        else:
+            raise RuntimeError(f"Expected a 4D tensor at this point, got {x.shape}.")
+
+        # 8) Debug Logging
+        #self.NaN_stacking_debug.append("Test entry")
+
+        if self.debug_log:
+            log_filename = "debug_log.txt"
+            with open(log_filename, "a") as log_file:  # Append mode
+                log_file.write(f"\n📝 DEBUG LOG for index {index}:\n")
+                for entry in self.debug_log:
+                    log_file.write(entry + "\n")
+
+            print(f"✅ Debug log saved to {log_filename}")
+
+        # Reset debug logs to prevent duplicates
+        self.debug_log = []
+
+        # 9) Return the data
+        print(f"Sample x shape after flattening: {x.shape}, y shape: {y.shape}")  # Moved above return so it's reachable
+
+        if self.return_doy:
+            return x, y, doys
+
+        return x, y
+
+    '''
     def __getitem__(self, index):
         """
         Retrieves a single sample (x, y) — or (x, y, doys) if self.return_doy is True — from the dataset.
@@ -187,9 +333,19 @@ class FireSpreadDataset(Dataset):
         else:
             x, y = loaded_imgs
 
+        if np.isnan(x).any() or np.isnan(y).any():
+            self.debug_log.append(
+                f"⚠️ NaNs after stacking in `load_imgs()` → year={found_fire_year}, fire={found_fire_name}, fire_index={in_fire_index}"
+            )
+
+
         # 3) Convert from NumPy → Torch 
         x = torch.from_numpy(x)  # shape: (T, F, H, W) or (F, H, W)
         y = torch.from_numpy(y).long()  # shape: (H, W)
+
+
+        if torch.isnan(x).any() or torch.isnan(y).any():
+            self.debug_log.append(f"⚠️ NaNs detected after converting to tensor in `__getitem__()` for index {index}")
 
         # 3) Preprocess/augment
         #x, y = self.preprocess_and_augment(x, y)
@@ -198,6 +354,10 @@ class FireSpreadDataset(Dataset):
         if self.transform is not None:
             # transform expected to take (x, y) => (x, y)
             x, y = self.transform(x, y)
+
+
+            if torch.isnan(x).any() or torch.isnan(y).any():
+                self.debug_log.append(f"⚠️ NaNs detected after applying transform in `__getitem__()` for index {index}")
 
         # 4) (Optional) remove duplicate static features if needed
         if self.remove_duplicate_features and self.n_leading_observations > 1:
@@ -223,12 +383,30 @@ class FireSpreadDataset(Dataset):
             raise RuntimeError(f"Expected a 4D tensor at this point, got {x.shape}.")
 
         # 7) Return x, y (and doys if needed)
+        
+        
+        self.NaN_stacking_debug.append("Test entry")
+
+
+        if self.debug_log:
+            log_filename = "debug_log.txt"
+            with open(log_filename, "a") as log_file:  # Append mode
+                log_file.write(f"\n📝 DEBUG LOG for index {index}:\n")
+                for entry in self.debug_log:
+                    log_file.write(entry + "\n")
+            
+            # Optional: Print confirmation that log was written
+            print(f"✅ Debug log saved to {log_filename}")
+
+        self.debug_log = []
         if self.return_doy:
             return x, y, doys
+        
+        
         return x, y
         print(f"Sample x shape after flattening: {x.shape}, y shape: {y.shape}")
 
-
+    '''
 
     def __len__(self):
         return self.length
@@ -272,7 +450,7 @@ class FireSpreadDataset(Dataset):
 
                     if len(fire_img_paths) == 0:
                         warnings.warn(f"In dataset preparation: Fire {fire_year}: {fire_name} contains no images.",
-                                      RuntimeWarning)
+                                        RuntimeWarning)
             else:
                 fires_in_year = glob.glob(
                     f"{self.data_dir}/{fire_year}/*.hdf5")
@@ -391,7 +569,7 @@ class FireSpreadDataset(Dataset):
 
         # Create land cover class one-hot encoding, put it where the land cover integer was
         new_shape = (x.shape[0], x.shape[2], x.shape[3],
-                     self.one_hot_matrix.shape[0])
+                        self.one_hot_matrix.shape[0])
         # -1 because land cover classes start at 1
         landcover_classes_flattened = x[:, 16, ...].long().flatten() - 1
         landcover_encoding = self.one_hot_matrix[landcover_classes_flattened].reshape(
@@ -403,9 +581,9 @@ class FireSpreadDataset(Dataset):
 
     def augment(self, x, y):
         """_summary_ Applies geometric transformations: 
-          1. random square cropping, preferring images with a) fire pixels in the output and b) (with much less weight) fire pixels in the input
-          2. rotate by multiples of 90°
-          3. flip horizontally and vertically
+            1. random square cropping, preferring images with a) fire pixels in the output and b) (with much less weight) fire pixels in the input
+            2. rotate by multiples of 90°
+            3. flip horizontally and vertically
         Adjustment of angles is done as in https://github.com/google-research/google-research/blob/master/simulation_research/next_day_wildfire_spread/image_utils.py
 
         Args:
@@ -466,7 +644,7 @@ class FireSpreadDataset(Dataset):
 
             # Adjust angles
             x[:, self.indices_of_degree_features, ...] = (x[:, self.indices_of_degree_features,
-                                                          ...] - 90 * rotate) % 360
+                                                            ...] - 90 * rotate) % 360
 
         return x, y
 
@@ -671,7 +849,7 @@ class FireSpreadDataset(Dataset):
 
                 # Get dates from filenames
                 img_dates = [img_path.split("/")[-1].split("_")[0].replace(".tif", "")
-                             for img_path in img_files]
+                                for img_path in img_files]
 
                 # Active fire masks have nans where no detections occur. In general, we want to replace NaNs with
                 # the mean of the respective feature. Since the NaNs here don't represent missing values, we replace
